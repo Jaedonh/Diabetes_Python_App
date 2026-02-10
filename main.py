@@ -1,292 +1,170 @@
 from __future__ import annotations
 
 from datetime import datetime
-from math import hypot
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from kivy.app import App
-from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
 from kivy.lang import Builder
-from kivy.properties import DictProperty, ListProperty, NumericProperty, StringProperty
+from kivy.properties import DictProperty, ListProperty, StringProperty
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.uix.gridlayout import GridLayout
 from kivy.uix.popup import Popup
-from kivy.uix.widget import Widget
 
 from storage import DiabetesTrackerStore
 
 KV = """
-#:import dp kivy.metrics.dp
-
 <TrackerRoot>:
     orientation: "vertical"
-    padding: dp(10)
-    spacing: dp(8)
-
-    canvas.before:
-        Color:
-            rgba: 0.96, 0.97, 1, 1
-        Rectangle:
-            pos: self.pos
-            size: self.size
-
-    Label:
-        text: "Diabetes Body Site Rotation"
-        size_hint_y: None
-        height: dp(34)
-        bold: True
-        color: (0.15, 0.2, 0.45, 1)
+    spacing: "8dp"
+    padding: "8dp"
 
     BoxLayout:
         size_hint_y: None
-        height: dp(44)
-        spacing: dp(8)
-
-        Label:
-            text: "Device"
-            size_hint_x: None
-            width: dp(64)
-            text_size: self.size
-            halign: "left"
-            valign: "middle"
+        height: "44dp"
+        spacing: "8dp"
 
         Spinner:
+            id: patient_spinner
+            text: root.current_patient
+            values: root.patients
+            on_text: root.change_patient(self.text)
+
+        Spinner:
+            id: device_spinner
             text: root.current_device
             values: root.devices
             on_text: root.change_device(self.text)
 
-        Label:
-            text: "View"
-            size_hint_x: None
-            width: dp(44)
-            text_size: self.size
-            halign: "left"
-            valign: "middle"
-
-        Spinner:
-            text: root.current_view
-            values: ["Front", "Back"]
-            on_text: root.change_view(self.text)
-
     Label:
         size_hint_y: None
-        height: dp(22)
-        text: "Tap a body marker to log a site + note"
-        color: (0.2, 0.2, 0.2, 1)
+        height: "22dp"
+        text: "Tap a body area to log usage + notes"
+        color: (0.1, 0.1, 0.1, 1)
 
     BodyMap:
         id: body_map
         size_hint_y: 0.62
-        view_mode: root.current_view
-        on_spot_tapped: root.open_note_popup(args[1])
 
     Label:
         size_hint_y: None
-        height: dp(24)
-        text: "Legend: Green=unused  Yellow=1-2 uses  Red=3+ uses"
-        color: (0.25, 0.25, 0.25, 1)
-
-    Label:
-        size_hint_y: None
-        height: dp(28)
+        height: "28dp"
         text: root.summary_text
+        bold: True
         color: (0.15, 0.25, 0.7, 1)
 
     ScrollView:
         do_scroll_x: False
 
         Label:
+            id: history_label
             text_size: self.width, None
             size_hint_y: None
-            height: self.texture_size[1] + dp(12)
+            height: self.texture_size[1] + dp(16)
             text: root.history_text
             halign: "left"
             valign: "top"
+
+<BodyMap>:
+    cols: 2
+    spacing: "8dp"
+    padding: "8dp"
 """
 
-DEVICE_TYPES = ["Injection", "CGM", "Port", "Pump"]
 
-# relative x,y coordinates (0..1) for two chart views
-FRONT_SPOTS: Dict[str, Tuple[float, float]] = {
-    "Left Arm": (0.30, 0.67),
-    "Right Arm": (0.70, 0.67),
-    "Upper Abdomen Left": (0.44, 0.54),
-    "Upper Abdomen Right": (0.56, 0.54),
-    "Lower Abdomen Left": (0.46, 0.46),
-    "Lower Abdomen Right": (0.54, 0.46),
-    "Left Thigh": (0.46, 0.30),
-    "Right Thigh": (0.54, 0.30),
-    "Left Hip": (0.44, 0.40),
-    "Right Hip": (0.56, 0.40),
-}
+SPOTS = [
+    "Left Arm",
+    "Right Arm",
+    "Upper Abdomen Left",
+    "Upper Abdomen Right",
+    "Lower Abdomen Left",
+    "Lower Abdomen Right",
+    "Left Thigh",
+    "Right Thigh",
+    "Left Hip",
+    "Right Hip",
+    "Left Lower Back",
+    "Right Lower Back",
+]
 
-BACK_SPOTS: Dict[str, Tuple[float, float]] = {
-    "Left Arm": (0.30, 0.67),
-    "Right Arm": (0.70, 0.67),
-    "Left Lower Back": (0.44, 0.50),
-    "Right Lower Back": (0.56, 0.50),
-    "Left Hip": (0.44, 0.40),
-    "Right Hip": (0.56, 0.40),
-    "Left Thigh": (0.46, 0.30),
-    "Right Thigh": (0.54, 0.30),
-}
+DEVICES = ["Injection", "CGM", "Port", "Pump"]
 
 
-class BodyMap(Widget):
-    __events__ = ("on_spot_tapped",)
+class BodyMap(GridLayout):
+    pass
 
-    spot_usage = DictProperty({})
-    marker_radius = NumericProperty(15)
-    view_mode = StringProperty("Front")
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.bind(pos=self._redraw, size=self._redraw, spot_usage=self._redraw, view_mode=self._redraw)
-
-    def on_spot_tapped(self, _spot_name: str):
-        return None
-
-    def on_touch_down(self, touch):
-        if not self.collide_point(*touch.pos):
-            return super().on_touch_down(touch)
-
-        hit_spot = self._find_spot_at_point(touch.x, touch.y)
-        if hit_spot:
-            self.dispatch("on_spot_tapped", hit_spot)
-            return True
-        return super().on_touch_down(touch)
-
-    def _active_spots(self) -> Dict[str, Tuple[float, float]]:
-        return FRONT_SPOTS if self.view_mode == "Front" else BACK_SPOTS
-
-    def _find_spot_at_point(self, x: float, y: float) -> str | None:
-        radius = self._spot_pixel_radius()
-        for spot, (sx, sy) in self._active_spots().items():
-            px, py = self._to_widget_coords(sx, sy)
-            if hypot(px - x, py - y) <= radius:
-                return spot
-        return None
-
-    def _to_widget_coords(self, rx: float, ry: float) -> Tuple[float, float]:
-        return self.x + (rx * self.width), self.y + (ry * self.height)
-
-    def _spot_pixel_radius(self) -> float:
-        return max(min(self.width, self.height) * 0.028, self.marker_radius)
-
-    def _draw_body_outline(self):
-        # clean body-chart style similar to EMR charts (simple silhouette)
-        x, y, w, h = self.x, self.y, self.width, self.height
-        cx = self.center_x
-
-        Color(1, 1, 1, 1)
-        RoundedRectangle(pos=(x + w * 0.04, y + h * 0.04), size=(w * 0.92, h * 0.92), radius=[14])
-
-        Color(0.75, 0.78, 0.84, 1)
-        Line(rounded_rectangle=(x + w * 0.04, y + h * 0.04, w * 0.92, h * 0.92, 14), width=1.2)
-
-        Color(0.86, 0.87, 0.90, 1)
-        Ellipse(pos=(cx - w * 0.06, y + h * 0.77), size=(w * 0.12, h * 0.14))
-        Rectangle(pos=(cx - w * 0.10, y + h * 0.43), size=(w * 0.20, h * 0.30))
-        Rectangle(pos=(cx - w * 0.16, y + h * 0.47), size=(w * 0.06, h * 0.23))
-        Rectangle(pos=(cx + w * 0.10, y + h * 0.47), size=(w * 0.06, h * 0.23))
-        Rectangle(pos=(cx - w * 0.09, y + h * 0.14), size=(w * 0.07, h * 0.29))
-        Rectangle(pos=(cx + w * 0.02, y + h * 0.14), size=(w * 0.07, h * 0.29))
-
-        Color(0.68, 0.71, 0.77, 1)
-        Line(rectangle=(cx - w * 0.10, y + h * 0.43, w * 0.20, h * 0.30), width=1)
-        Line(ellipse=(cx - w * 0.06, y + h * 0.77, w * 0.12, h * 0.14), width=1)
-
-    def _redraw(self, *_):
-        self.canvas.clear()
-        with self.canvas:
-            Color(0.94, 0.96, 1, 1)
-            Rectangle(pos=self.pos, size=self.size)
-
-            self._draw_body_outline()
-
-            radius = self._spot_pixel_radius()
-            for spot, (sx, sy) in self._active_spots().items():
-                px, py = self._to_widget_coords(sx, sy)
-                use_count = self.spot_usage.get(spot, 0)
-                if use_count == 0:
-                    Color(0.2, 0.72, 0.32, 0.95)
-                elif use_count < 3:
-                    Color(0.96, 0.75, 0.18, 0.96)
-                else:
-                    Color(0.88, 0.25, 0.25, 0.96)
-
-                Ellipse(pos=(px - radius, py - radius), size=(radius * 2, radius * 2))
+class NotePopup(Popup):
+    pass
 
 
 class TrackerRoot(BoxLayout):
-    devices = ListProperty(DEVICE_TYPES)
+    patients = ListProperty(["Default Patient"])
+    devices = ListProperty(DEVICES)
+    current_patient = StringProperty("Default Patient")
     current_device = StringProperty("Injection")
-    current_view = StringProperty("Front")
     history_text = StringProperty("No entries yet.")
     summary_text = StringProperty("No spots logged yet for this device.")
+    spot_usage = DictProperty({})
 
     def __init__(self, store: DiabetesTrackerStore, **kwargs):
         super().__init__(**kwargs)
         self.store = store
         self.data = self.store.load()
+
+        self.patients = sorted(self.data.keys()) or ["Default Patient"]
         if not self.data:
-            self.data = {device: {"history": []} for device in DEVICE_TYPES}
+            self.data[self.current_patient] = {device: {} for device in DEVICES}
             self.store.save(self.data)
 
     def on_kv_post(self, *_):
+        self._build_body_buttons()
         self._refresh_screen()
 
-    def change_device(self, device: str):
-        self.current_device = device
-        self._refresh_screen()
+    def _build_body_buttons(self):
+        body_map = self.ids.body_map
+        body_map.clear_widgets()
 
-    def change_view(self, view: str):
-        self.current_view = view
+        for spot in SPOTS:
+            btn = Button(text=spot, on_release=lambda _, s=spot: self._open_note_popup(s))
+            body_map.add_widget(btn)
 
-    def open_note_popup(self, spot: str):
-        popup = Popup(title=f"Log {self.current_device} site", size_hint=(0.92, 0.58))
+    def _open_note_popup(self, spot: str):
         content = Builder.load_string(
             """
-#:import dp kivy.metrics.dp
 BoxLayout:
     orientation: "vertical"
-    spacing: dp(8)
-    padding: dp(8)
+    spacing: "8dp"
+    padding: "8dp"
 
     Label:
-        id: spot_lbl
+        text: "Spot: " + root.spot_name
         size_hint_y: None
-        height: dp(32)
+        height: "32dp"
 
     TextInput:
         id: note_input
-        hint_text: "Optional note: pain, inaccurate reading, movement issues"
+        hint_text: "Note (pain, bad reading, movement issues, etc.)"
         multiline: True
 
     BoxLayout:
         size_hint_y: None
-        height: dp(42)
-        spacing: dp(8)
+        height: "42dp"
+        spacing: "8dp"
 
         Button:
-            id: save_btn
             text: "Save"
+            on_release: app.root.save_spot(root.spot_name, note_input.text); root.dismiss()
+
         Button:
-            id: cancel_btn
             text: "Cancel"
+            on_release: root.dismiss()
 """
         )
-        content.ids.spot_lbl.text = f"Site: {spot}"
-        content.ids.cancel_btn.bind(on_release=lambda *_: popup.dismiss())
-        content.ids.save_btn.bind(
-            on_release=lambda *_: self._save_popup_entry_and_close(popup, spot, content.ids.note_input.text)
-        )
-
+        popup = NotePopup(title=f"Log {self.current_device} spot", size_hint=(0.9, 0.6))
+        popup.spot_name = spot
         popup.content = content
         popup.open()
-
-    def _save_popup_entry_and_close(self, popup: Popup, spot: str, note: str):
-        self.save_spot(spot, note)
-        popup.dismiss()
 
     def save_spot(self, spot: str, note: str):
         entry = {
@@ -294,31 +172,57 @@ BoxLayout:
             "note": note.strip(),
             "timestamp": datetime.now().isoformat(timespec="minutes"),
         }
-        self.data.setdefault(self.current_device, {"history": []}).setdefault("history", []).append(entry)
+
+        patient_data = self.data.setdefault(self.current_patient, {device: {} for device in DEVICES})
+        device_data = patient_data.setdefault(self.current_device, {})
+        history: List[Dict[str, str]] = device_data.setdefault("history", [])
+        history.append(entry)
+
         self.store.save(self.data)
         self._refresh_screen()
 
+    def change_patient(self, patient: str):
+        self.current_patient = patient
+        self._refresh_screen()
+
+    def change_device(self, device: str):
+        self.current_device = device
+        self._refresh_screen()
+
     def _refresh_screen(self):
-        history: List[Dict[str, str]] = self.data.setdefault(self.current_device, {"history": []}).get("history", [])
+        patient_data = self.data.setdefault(self.current_patient, {device: {} for device in DEVICES})
+        device_data = patient_data.setdefault(self.current_device, {})
+        history: List[Dict[str, str]] = device_data.get("history", [])
 
         usage: Dict[str, int] = {}
-        for entry in history:
-            usage[entry["spot"]] = usage.get(entry["spot"], 0) + 1
+        for item in history:
+            usage[item["spot"]] = usage.get(item["spot"], 0) + 1
 
-        self.ids.body_map.spot_usage = usage
+        self.spot_usage = usage
+        self._refresh_body_button_styles()
 
         if not history:
+            self.history_text = "No entries yet. Start by tapping a spot in the body map."
             self.summary_text = "No spots logged yet for this device."
-            self.history_text = "Tap a body marker to save an entry."
             return
 
-        least_used_spot = min(usage, key=usage.get)
-        self.summary_text = f"Rotation tip: use {least_used_spot} next ({usage[least_used_spot]} uses)."
+        recent = list(reversed(history[-12:]))
+        lines = [f"• {r['timestamp']} | {r['spot']} | {r['note'] or 'No note'}" for r in recent]
+        self.history_text = "\n".join(lines)
 
-        recent_entries = list(reversed(history[-12:]))
-        self.history_text = "\n".join(
-            f"• {item['timestamp']} | {item['spot']} | {item['note'] or 'No note'}" for item in recent_entries
-        )
+        if usage:
+            least_used = min(usage, key=usage.get)
+            self.summary_text = f"Least used area suggestion: {least_used} ({usage[least_used]} uses)"
+
+    def _refresh_body_button_styles(self):
+        for child in self.ids.body_map.children:
+            count = self.spot_usage.get(child.text, 0)
+            if count == 0:
+                child.background_color = (0.3, 0.7, 0.3, 1)
+            elif count < 3:
+                child.background_color = (0.95, 0.75, 0.25, 1)
+            else:
+                child.background_color = (0.9, 0.35, 0.35, 1)
 
 
 class DiabetesTrackerApp(App):
